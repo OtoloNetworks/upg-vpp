@@ -610,8 +610,12 @@ VLIB_CLI_COMMAND (upf_tdf_ul_table_add_del_command, static) =
 static u32
 upf_table_id_from_fib_index (fib_protocol_t fproto, u32 fib_index)
 {
-  return (fproto == FIB_PROTOCOL_IP4) ?
-    ip4_fib_get (fib_index)->table_id : ip6_fib_get (fib_index)->table_id;
+  /*
+   * FIXME
+   * return (fproto == FIB_PROTOCOL_IP4) ?
+   * ip4_fib_get (fib_index)->table_id : ip6_fib_get (fib_index)->table_id;
+   */
+  return 0;
 };
 
 static clib_error_t *

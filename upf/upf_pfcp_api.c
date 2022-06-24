@@ -1539,11 +1539,13 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 	      upf_ip46_get_resolving_interface (fib_index, &ohc->ip, is_ip4);
 	    if (~0 == create->forward.dst_sw_if_index)
 	      {
+#if 0
 		far_error (response, far,
 			   "no route to %U in FIB index %d",
 			   format_ip46_address, &ohc->ip, IP46_TYPE_ANY,
 			   is_ip4 ? ip4_fib_get (fib_index)->table_id :
 			   ip6_fib_get (fib_index)->table_id);
+#endif
 		goto out_error;
 	      }
 
@@ -1695,11 +1697,13 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	      upf_ip46_get_resolving_interface (fib_index, &ohc->ip, is_ip4);
 	    if (~0 == update->forward.dst_sw_if_index)
 	      {
+#if 0
 		far_error (response, far,
 			   "no route to %U in FIB index %d",
 			   format_ip46_address, &ohc->ip, IP46_TYPE_ANY,
 			   is_ip4 ? ip4_fib_get (fib_index)->table_id :
 			   ip6_fib_get (fib_index)->table_id);
+#endif
 		goto out_error;
 	      }
 

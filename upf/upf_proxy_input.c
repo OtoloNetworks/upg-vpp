@@ -281,7 +281,7 @@ load_tstamp_offset (vlib_buffer_t * b, flow_direction_t direction,
   if (!tcp_opts_tstamp (&opts))
     return;
 
-  flow_tsval_offs (flow, direction) = opts.tsval - tcp_time_now ();
+  flow_tsval_offs (flow, direction) = opts.tsval ; // - tcp_time_now ();
 }
 
 static uword
