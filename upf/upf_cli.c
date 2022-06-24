@@ -29,6 +29,7 @@
 #include <upf/pfcp.h>
 #include <upf/upf_pfcp_server.h>
 #include <upf/upf_proxy.h>
+#include <upf/upf_ipfix.h>
 
 /* Action function shared between message handler and debug CLI */
 #include <upf/flowtable.h>
@@ -171,6 +172,48 @@ VLIB_CLI_COMMAND (upf_pfcp_show_endpoint_command, static) =
   .short_help =
   "show upf pfcp endpoint",
   .function = upf_pfcp_show_endpoint_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+upf_pfcp_policer_set_fn (vlib_main_t * vm,
+			 unformat_input_t * main_input,
+			 vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = NULL;
+  qos_pol_cfg_params_st *cfg = &pfcp_rate_cfg_main;
+  u32 cir_pps;
+  u32 cb_ms;
+
+  if (!unformat_user (main_input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "cir-pps %u", &cir_pps))
+	cfg->rb.pps.cir_pps = cir_pps;
+      else if (unformat (line_input, "cb-ms %u", &cb_ms))
+	cfg->rb.pps.cb_ms = cb_ms;
+      else
+	{
+	  error = unformat_parse_error (line_input);
+	  return error;
+	}
+    }
+
+  upf_pfcp_policers_recalculate (cfg);
+
+  return NULL;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (upf_pfcp_policer_set, static) =
+{
+  .path = "upf pfcp policer set",
+  .short_help =
+  "upf pfcp policer set cir-pps <packet-per-second> cb-ms <burst-ms>",
+  .function = upf_pfcp_policer_set_fn,
 };
 /* *INDENT-ON* */
 
@@ -332,8 +375,14 @@ upf_nwi_add_del_command_fn (vlib_main_t * vm,
   u8 *name = NULL;
   u8 *s;
   u32 table_id = 0;
+  upf_ipfix_policy_t ipfix_policy = UPF_IPFIX_POLICY_NONE;
   u8 add = 1;
   int rv;
+  ip_address_t ipfix_collector_ip = ip_address_initializer;
+  u32 ipfix_report_interval = 0;
+  u32 observation_domain_id = 1;
+  u8 *observation_domain_name = 0;
+  u64 observation_point_id = 1;
 
   if (!unformat_user (main_input, unformat_line_input, line_input))
     return 0;
@@ -353,6 +402,28 @@ upf_nwi_add_del_command_fn (vlib_main_t * vm,
 	;
       else if (unformat (line_input, "vrf %u", &table_id))
 	;
+      else if (unformat (line_input, "ipfix-policy %U",
+			 unformat_ipfix_policy, &ipfix_policy))
+	;
+      else if (unformat (line_input, "ipfix-collector-ip %U",
+			 unformat_ip_address, &ipfix_collector_ip))
+	;
+      else if (unformat (line_input, "ipfix-report-interval %u",
+			 &ipfix_report_interval))
+	;
+      else
+	if (unformat
+	    (line_input, "observation-domain-id %u", &observation_domain_id))
+	;
+      else
+	if (unformat
+	    (line_input, "observation-domain-name %_%v%_",
+	     &observation_domain_name))
+	;
+      else
+	if (unformat
+	    (line_input, "observation-point-id %lu", &observation_point_id))
+	;
       else
 	{
 	  error = unformat_parse_error (line_input);
@@ -371,7 +442,12 @@ upf_nwi_add_del_command_fn (vlib_main_t * vm,
   if (~0 == fib_table_find (FIB_PROTOCOL_IP6, table_id))
     clib_warning ("table %d not (yet) defined for IPv6", table_id);
 
-  rv = vnet_upf_nwi_add_del (name, table_id, table_id, add);
+  rv = vnet_upf_nwi_add_del (name, table_id, table_id, ipfix_policy,
+			     &ipfix_collector_ip,
+			     ipfix_report_interval,
+			     observation_domain_id,
+			     observation_domain_name,
+			     observation_point_id, add);
 
   switch (rv)
     {
@@ -393,6 +469,7 @@ upf_nwi_add_del_command_fn (vlib_main_t * vm,
 
 done:
   vec_free (name);
+  vec_free (observation_domain_name);
   unformat_free (line_input);
   return error;
 }
@@ -402,7 +479,14 @@ VLIB_CLI_COMMAND (upf_nwi_add_del_command, static) =
 {
   .path = "upf nwi",
   .short_help =
-  "upf nwi name <name> [table <table-id>] [del]",
+  "upf nwi name <name> [table <table-id>] [vrf <vrf-id>] "
+  "[ipfix-policy <name>] "
+  "[ipfix-collector-ip <ip>] "
+  "[ipfix-report-interval <secs>] "
+  "[observation-domain-id <id>] "
+  "[observation-domain-name <name>] "
+  "[observation-point-id <id>] "
+  "[del]",
   .function = upf_nwi_add_del_command_fn,
 };
 /* *INDENT-ON* */
@@ -441,13 +525,21 @@ upf_show_nwi_command_fn (vlib_main_t * vm,
 
   pool_foreach (nwi, gtm->nwis)
   {
+    ip4_fib_t *fib4;
+    ip6_fib_t *fib6;
     if (name && !vec_is_equal (name, nwi->name))
       continue;
 
-    vlib_cli_output (vm, "%U, ip4-fib-index %u, ip6-fib-index %u\n",
+    fib4 = ip4_fib_get (nwi->fib_index[FIB_PROTOCOL_IP4]);
+    fib6 = ip6_fib_get (nwi->fib_index[FIB_PROTOCOL_IP6]);
+
+    vlib_cli_output (vm,
+		     "%U, ip4-table-id %u, ip6-table-id %u, ipfix-policy %U, ipfix-collector-ip %U\n",
 		     format_dns_labels, nwi->name,
-		     nwi->fib_index[FIB_PROTOCOL_IP4],
-		     nwi->fib_index[FIB_PROTOCOL_IP6]);
+		     fib4->hash.table_id,
+		     fib6->table_id,
+		     format_upf_ipfix_policy, nwi->ipfix_policy,
+		     format_ip_address, &nwi->ipfix_collector_ip);
   }
 
 done:
@@ -607,17 +699,6 @@ VLIB_CLI_COMMAND (upf_tdf_ul_table_add_del_command, static) =
 };
 /* *INDENT-ON* */
 
-static u32
-upf_table_id_from_fib_index (fib_protocol_t fproto, u32 fib_index)
-{
-  /*
-   * FIXME
-   * return (fproto == FIB_PROTOCOL_IP4) ?
-   * ip4_fib_get (fib_index)->table_id : ip6_fib_get (fib_index)->table_id;
-   */
-  return 0;
-};
-
 static clib_error_t *
 upf_tdf_ul_table_show_fn (vlib_main_t * vm,
 			  unformat_input_t * input, vlib_cli_command_t * cmd)
@@ -634,12 +715,10 @@ upf_tdf_ul_table_show_fn (vlib_main_t * vm,
     {
       if (~0 != vec_elt (gtm->tdf_ul_table[fproto], ii))
 	{
-	  u32 vrf_table_id = upf_table_id_from_fib_index (fproto, ii);
-	  u32 fib_table_id = upf_table_id_from_fib_index (fproto,
-							  vec_elt
-							  (gtm->tdf_ul_table
-							   [fproto],
-							   ii));
+	  u32 vrf_table_id = fib_table_get_table_id (ii, fproto);
+	  u32 fib_table_id =
+	    fib_table_get_table_id (vec_elt (gtm->tdf_ul_table[fproto], ii),
+				    fproto);
 
 	  vlib_cli_output (vm, "  %u -> %u", vrf_table_id, fib_table_id);
 	}
@@ -1004,7 +1083,7 @@ VLIB_CLI_COMMAND (upf_show_gtpu_endpoint_command, static) =
 /* *INDENT-ON* */
 
 static int
-upf_flows_out_cb (BVT (clib_bihash_kv) * kvp, void *arg)
+upf_flows_out_cb (clib_bihash_kv_48_8_t * kvp, void *arg)
 {
   flowtable_main_t *fm = &flowtable_main;
   vlib_main_t *vm = (vlib_main_t *) arg;
@@ -1077,7 +1156,7 @@ upf_show_session_command_fn (vlib_main_t * vm,
 	  goto done;
 	}
 
-      BV (clib_bihash_foreach_key_value_pair)
+      clib_bihash_foreach_key_value_pair_48_8
 	(&sess->fmt.flows_ht, upf_flows_out_cb, vm);
       goto done;
     }
@@ -1232,7 +1311,7 @@ upf_show_flows_command_fn (vlib_main_t * vm,
   for (cpu_index = 0; cpu_index < tm->n_vlib_mains; cpu_index++)
     {
       flowtable_main_per_cpu_t *fmt = &fm->per_cpu[cpu_index];
-      BV (clib_bihash_foreach_key_value_pair)
+      clib_bihash_foreach_key_value_pair_48_8
 	(&fmt->flows_ht, upf_flows_out_cb, vm);
     }
 

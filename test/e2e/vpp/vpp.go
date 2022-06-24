@@ -43,7 +43,11 @@ import (
 	"golang.org/x/sys/unix"
 	"gopkg.in/tomb.v2"
 
+	"github.com/travelping/upg-vpp/test/e2e/binapi/ip_types"
+	"github.com/travelping/upg-vpp/test/e2e/binapi/ipfix_export"
+	"github.com/travelping/upg-vpp/test/e2e/binapi/upf"
 	"github.com/travelping/upg-vpp/test/e2e/network"
+	"github.com/travelping/upg-vpp/test/e2e/util"
 )
 
 const (
@@ -51,10 +55,11 @@ const (
 	VPP_RECONNECT_INTERVAL   = time.Second
 	// the startup can get quite slow if too many tests are
 	// run in parallel without enough CPU cores available
-	VPP_STARTUP_TIMEOUT     = 30 * time.Second
-	VPP_REPLY_TIMEOUT       = 5 * time.Second
-	NSENTER_CMD             = "nsenter"
-	DISPATCH_TRACE_FILENAME = "dispatch-trace.pcap"
+	VPP_STARTUP_TIMEOUT           = 30 * time.Second
+	VPP_STARTUP_TIMEOUT_GDBSERVER = 600 * time.Second
+	VPP_REPLY_TIMEOUT             = 5 * time.Second
+	NSENTER_CMD                   = "nsenter"
+	DISPATCH_TRACE_FILENAME       = "dispatch-trace.pcap"
 )
 
 type RouteConfig struct {
@@ -77,10 +82,30 @@ type VPPNetworkNamespace struct {
 	Placement     int
 }
 
+type NWIConfig struct {
+	Name                   string
+	Table                  int
+	IPFIXPolicy            string
+	IPFIXReportingInterval int
+	ObservationDomainId    int
+	ObservationDomainName  string
+	ObservationPointId     int
+	GetIPFIXCollectorIP    func() net.IP
+}
+
+type IPFIXExporterConfig struct {
+	GetCollectorIP func() net.IP
+	GetSrcIP       func() net.IP
+	Port           int
+	VRF            int
+}
+
 type VPPConfig struct {
-	BaseDir       string
-	Namespaces    []VPPNetworkNamespace
-	SetupCommands []string
+	BaseDir        string
+	Namespaces     []VPPNetworkNamespace
+	IPFIXExporters []IPFIXExporterConfig
+	NWIs           []NWIConfig
+	SetupCommands  []string
 }
 
 func (cfg VPPConfig) GetVPPAddress(namespace string) *net.IPNet {
@@ -193,8 +218,16 @@ func (vi *VPPInstance) prepareCommand() (*exec.Cmd, error) {
 	}
 
 	args := []string{"--net=" + vi.vppNS.Path()}
-	if vi.startupCfg.UseGDB {
-		gdbCmdsFile, err := vi.writeVPPFile("gdbcmds", "r\nbt full 30\n")
+	if vi.startupCfg.UseGDBServer {
+		vi.log.Infof("started gdbserver, please attach with\n"+
+			"%s %s gdb -ex 'target remote localhost:%d'\n"+
+			"and type 'continue' to stat",
+			NSENTER_CMD, strings.Join(args, " "),
+			vi.startupCfg.GDBServerPort)
+		args = append(args, "gdbserver", fmt.Sprintf("localhost:%d", vi.startupCfg.GDBServerPort))
+	} else if vi.startupCfg.UseGDB {
+		gdbCmdsFile, err := vi.writeVPPFile("gdbcmds",
+			"handle SIGPIPE nostop noprint ignore\nr\nbt full 30\n")
 		if err != nil {
 			return nil, errors.Wrap(err, "error writing gdbcmds")
 		}
@@ -239,7 +272,11 @@ func (vi *VPPInstance) StartVPP() error {
 	vi.copyPipeToLog(stderr, "stdout")
 
 	// wait for the file to appear so we don't get warnings from govpp
-	if err := waitForFile(vi.startupCfg.APISock, 100*time.Millisecond, VPP_STARTUP_TIMEOUT); err != nil {
+	timeout := VPP_STARTUP_TIMEOUT
+	if vi.startupCfg.UseGDBServer {
+		timeout = VPP_STARTUP_TIMEOUT_GDBSERVER
+	}
+	if err := waitForFile(vi.startupCfg.APISock, 100*time.Millisecond, timeout); err != nil {
 		return errors.Wrap(err, "error waiting for VPP to start")
 	}
 
@@ -395,6 +432,20 @@ func (vi *VPPInstance) Ctl(format string, args ...interface{}) (string, error) {
 	return reply.Reply, nil
 }
 
+func (vi *VPPInstance) setupLoopback() error {
+	_, ipNet, _ := net.ParseCIDR("127.0.0.1/8")
+
+	if err := vi.vppNS.AddAddress("lo", ipNet); err != nil {
+		return errors.Wrap(err, "error adding address to lo")
+	}
+
+	if err := vi.vppNS.SetLinkUp("lo"); err != nil {
+		return errors.Wrap(err, "error briging up the loopback interface")
+	}
+
+	return nil
+}
+
 func (vi *VPPInstance) SetupNamespaces() error {
 	var err error
 
@@ -403,6 +454,14 @@ func (vi *VPPInstance) SetupNamespaces() error {
 		vi.closeNamespaces()
 		return errors.Wrap(err, "VppNS")
 	}
+
+	if vi.startupCfg.UseGDBServer {
+		// need localhost for gdbserver
+		if err := vi.setupLoopback(); err != nil {
+			return err
+		}
+	}
+
 	vi.log.WithField("nsPath", vi.vppNS.Path()).Info("VPP netns created")
 
 	for _, nsCfg := range vi.cfg.Namespaces {
@@ -566,12 +625,66 @@ func (vi *VPPInstance) setupDispatchTrace() error {
 		return errors.Wrap(err, "error creating vppcapture temp file (closing)")
 	}
 
-	_, err = vi.Ctl("pcap dispatch trace on max 100000 file %s", filepath.Base(tmpFile.Name()))
+	_, err = vi.Ctl("pcap dispatch trace on max 100000 file %s buffer-trace af-packet-input 100", filepath.Base(tmpFile.Name()))
 	if err != nil {
 		return errors.Wrap(err, "error turning on the dispatch trace")
 	}
 
 	vi.dispatchTraceFileName = tmpFile.Name()
+	return nil
+}
+
+func (vi *VPPInstance) setupExporters() error {
+	for _, expCfg := range vi.cfg.IPFIXExporters {
+		req := &ipfix_export.IpfixExporterCreateDelete{
+			IsCreate:         true,
+			CollectorAddress: ip_types.AddressFromIP(expCfg.GetCollectorIP()),
+			CollectorPort:    uint16(expCfg.Port),
+			SrcAddress:       ip_types.AddressFromIP(expCfg.GetSrcIP()),
+			VrfID:            uint32(expCfg.VRF),
+			PathMtu:          1450,
+			TemplateInterval: 1,
+		}
+
+		reply := &ipfix_export.IpfixExporterCreateDeleteReply{}
+		if err := vi.ApiChannel.SendRequest(req).ReceiveReply(reply); err != nil {
+			return errors.Wrap(err, "ipfix_exporter_create_delete error")
+		}
+	}
+
+	return nil
+}
+
+func (vi *VPPInstance) setupNWIs() error {
+	for _, nwiCfg := range vi.cfg.NWIs {
+		req := &upf.UpfNwiAddDel{
+			Nwi:                 util.EncodeFQDN(nwiCfg.Name),
+			IP4TableID:          uint32(nwiCfg.Table),
+			IP6TableID:          uint32(nwiCfg.Table),
+			IpfixReportInterval: uint32(nwiCfg.IPFIXReportingInterval),
+			ObservationDomainID: uint32(nwiCfg.ObservationDomainId),
+			ObservationPointID:  uint64(nwiCfg.ObservationPointId),
+			Add:                 1,
+		}
+
+		if nwiCfg.ObservationDomainName != "" {
+			req.ObservationDomainName = []byte(nwiCfg.ObservationDomainName)
+		}
+
+		if nwiCfg.IPFIXPolicy != "" {
+			req.IpfixPolicy = []byte(nwiCfg.IPFIXPolicy)
+		}
+
+		if nwiCfg.GetIPFIXCollectorIP != nil {
+			req.IpfixCollectorIP = ip_types.AddressFromIP(nwiCfg.GetIPFIXCollectorIP())
+		}
+
+		reply := &upf.UpfNwiAddDelReply{}
+		if err := vi.ApiChannel.SendRequest(req).ReceiveReply(reply); err != nil {
+			return errors.Wrap(err, "upf_nwi_add_del binapi error")
+		}
+	}
+
 	return nil
 }
 
@@ -582,17 +695,30 @@ func (vi *VPPInstance) Configure() error {
 		}
 	}
 
-	allCmds := []string{
+	initialCmds := []string{
 		"upf pfcp server set fifo-size 512",
 	}
 	for _, nsCfg := range vi.cfg.Namespaces {
-		allCmds = append(allCmds, vi.interfaceCmds(nsCfg)...)
+		initialCmds = append(initialCmds, vi.interfaceCmds(nsCfg)...)
 	}
-	allCmds = append(allCmds, vi.cfg.SetupCommands...)
+
+	if err := vi.runCmds(initialCmds...); err != nil {
+		return err
+	}
+
+	if err := vi.setupExporters(); err != nil {
+		return err
+	}
+
+	if err := vi.setupNWIs(); err != nil {
+		return err
+	}
+
+	cmds := vi.cfg.SetupCommands
 	if vi.startupCfg.Trace {
-		allCmds = append(allCmds, "trace add af-packet-input 10000")
+		cmds = append(cmds, "trace add af-packet-input 10000")
 	}
-	return vi.runCmds(allCmds...)
+	return vi.runCmds(cmds...)
 }
 
 func (vi *VPPInstance) copyPipeToLog(pipe io.ReadCloser, what string) {

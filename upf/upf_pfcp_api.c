@@ -45,6 +45,7 @@
 #include "upf_pfcp_api.h"
 #include "upf_app_db.h"
 #include "upf_ipfilter.h"
+#include "upf_ipfix.h"
 
 #include <vlib/unix/plugin.h>
 
@@ -797,7 +798,7 @@ upf_alloc_and_assign_nat_binding (upf_nat_pool_t * np, upf_nat_addr_t * addr,
 				 u16 block_size);
 
   upf_nat_create_binding =
-    vlib_get_plugin_symbol ("nat_plugin.so", "nat_create_binding");
+    vlib_get_plugin_symbol ("nat_plugin.so", "nat_ed_create_binding");
 
   port_start =
     upf_nat_create_binding (user_ip, addr->ext_addr, np->min_port,
@@ -1367,30 +1368,6 @@ ip_udp_gtpu_rewrite (upf_far_forward_t * ff, u32 fib_index, int is_ip4)
   return;
 }
 
-/* from src/vnet/ip/ping.c */
-static fib_node_index_t
-upf_ip46_fib_table_lookup_host (u32 fib_index, ip46_address_t * pa46,
-				int is_ip4)
-{
-  fib_node_index_t fib_entry_index = is_ip4 ?
-    ip4_fib_table_lookup (ip4_fib_get (fib_index), &pa46->ip4, 32) :
-    ip6_fib_table_lookup (fib_index, &pa46->ip6, 128);
-  return fib_entry_index;
-}
-
-/* from src/vnet/ip/ping.c */
-static u32
-upf_ip46_get_resolving_interface (u32 fib_index, ip46_address_t * pa46,
-				  int is_ip4)
-{
-  fib_node_index_t fib_entry_index;
-
-  ASSERT (~0 != fib_index);
-
-  fib_entry_index = upf_ip46_fib_table_lookup_host (fib_index, pa46, is_ip4);
-  return fib_entry_get_resolving_interface (fib_entry_index);
-}
-
 #define far_error(r, far, fmt, ...)					\
   do {									\
     tp_session_error_report ((r), "FAR ID %u, " fmt, (far)->far_id, ## __VA_ARGS__); \
@@ -1455,6 +1432,7 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
   vec_foreach (far, create_far)
   {
     upf_far_t *create;
+    upf_nwi_t *nwi;
 
     vec_add2 (rules->far, create, 1);
     memset (create, 0, sizeof (*create));
@@ -1471,8 +1449,7 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 	if (ISSET_BIT (far->forwarding_parameters.grp.fields,
 		       FORWARDING_PARAMETERS_NETWORK_INSTANCE))
 	  {
-	    upf_nwi_t *nwi =
-	      lookup_nwi (far->forwarding_parameters.network_instance);
+	    nwi = lookup_nwi (far->forwarding_parameters.network_instance);
 	    if (!nwi)
 	      {
 		far_error (response, far, "unknown Network Instance");
@@ -1520,14 +1497,14 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 	      &far->forwarding_parameters.outer_header_creation;
 	    u32 fib_index;
 	    int is_ip4 = !!(ohc->description & OUTER_HEADER_CREATION_ANY_IP4);
+	    fib_protocol_t fproto =
+	      is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
 
 	    create->forward.flags |= FAR_F_OUTER_HEADER_CREATION;
 	    create->forward.outer_header_creation =
 	      far->forwarding_parameters.outer_header_creation;
 
-	    fib_index =
-	      upf_nwi_fib_index (is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6,
-				 create->forward.nwi_index);
+	    fib_index = upf_nwi_fib_index (fproto, create->forward.nwi_index);
 	    if (~0 == fib_index)
 	      {
 		far_error (response, far,
@@ -1539,13 +1516,10 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 	      upf_ip46_get_resolving_interface (fib_index, &ohc->ip, is_ip4);
 	    if (~0 == create->forward.dst_sw_if_index)
 	      {
-#if 0
 		far_error (response, far,
-			   "no route to %U in FIB index %d",
+			   "no route to %U in table %u",
 			   format_ip46_address, &ohc->ip, IP46_TYPE_ANY,
-			   is_ip4 ? ip4_fib_get (fib_index)->table_id :
-			   ip6_fib_get (fib_index)->table_id);
-#endif
+			   fib_table_get_table_id (fib_index, fproto));
 		goto out_error;
 	      }
 
@@ -1581,6 +1555,11 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 	      }
 	  }			//TODO: header_enrichment
       }
+
+    if (ISSET_BIT (far->grp.fields, CREATE_FAR_TP_IPFIX_POLICY))
+      create->ipfix_policy = upf_ipfix_lookup_policy (far->ipfix_policy, 0);
+    else
+      create->ipfix_policy = UPF_IPFIX_POLICY_UNSPECIFIED;
   }
 
   pfcp_sort_fars (rules);
@@ -1616,6 +1595,7 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
   vec_foreach (far, update_far)
   {
     upf_far_t *update;
+    upf_nwi_t *nwi;
 
     update = pfcp_get_far (sx, PFCP_PENDING, far->far_id);
     if (!update)
@@ -1636,7 +1616,7 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	    if (vec_len (far->update_forwarding_parameters.network_instance)
 		!= 0)
 	      {
-		upf_nwi_t *nwi =
+		nwi =
 		  lookup_nwi (far->
 			      update_forwarding_parameters.network_instance);
 		if (!nwi)
@@ -1672,6 +1652,8 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	      &far->update_forwarding_parameters.outer_header_creation;
 	    u32 fib_index;
 	    int is_ip4 = !!(ohc->description & OUTER_HEADER_CREATION_ANY_IP4);
+	    fib_protocol_t fproto =
+	      is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
 
 	    if (ISSET_BIT (far->update_forwarding_parameters.grp.fields,
 			   UPDATE_FORWARDING_PARAMETERS_PFCPSMREQ_FLAGS) &&
@@ -1682,9 +1664,7 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	    update->forward.flags |= FAR_F_OUTER_HEADER_CREATION;
 	    update->forward.outer_header_creation = *ohc;
 
-	    fib_index =
-	      upf_nwi_fib_index (is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6,
-				 update->forward.nwi_index);
+	    fib_index = upf_nwi_fib_index (fproto, update->forward.nwi_index);
 	    if (~0 == fib_index)
 	      {
 		far_error (response, far,
@@ -1697,13 +1677,10 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	      upf_ip46_get_resolving_interface (fib_index, &ohc->ip, is_ip4);
 	    if (~0 == update->forward.dst_sw_if_index)
 	      {
-#if 0
 		far_error (response, far,
-			   "no route to %U in FIB index %d",
+			   "no route to %U in table %u",
 			   format_ip46_address, &ohc->ip, IP46_TYPE_ANY,
-			   is_ip4 ? ip4_fib_get (fib_index)->table_id :
-			   ip6_fib_get (fib_index)->table_id);
-#endif
+			   fib_table_get_table_id (fib_index, fproto));
 		goto out_error;
 	      }
 
@@ -1740,6 +1717,11 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	  }
 	//TODO: header_enrichment
       }
+
+    if (ISSET_BIT (far->grp.fields, UPDATE_FAR_TP_IPFIX_POLICY))
+      update->ipfix_policy = upf_ipfix_lookup_policy (far->ipfix_policy, 0);
+    else
+      update->ipfix_policy = UPF_IPFIX_POLICY_UNSPECIFIED;
   }
 
   return 0;
@@ -2572,6 +2554,12 @@ handle_session_establishment_request (pfcp_msg_t * msg,
 
       pending->inactivity_timer.period = req->user_plane_inactivity_timer;
       pending->inactivity_timer.handle = ~0;
+    }
+
+  if (ISSET_BIT (req->grp.fields, SESSION_ESTABLISHMENT_REQUEST_USER_ID))
+    {
+      memcpy (&sess->user_id, &req->user_id, sizeof (pfcp_user_id_t));
+      sess->user_id.nai = vec_dup (req->user_id.nai);
     }
 
   if ((r = handle_create_pdr (sess, req->create_pdr, resp)) != 0)

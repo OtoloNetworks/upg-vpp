@@ -13,7 +13,7 @@ from scapy.contrib.pfcp import CauseValues, IE_ApplyAction, IE_Cause, \
     IE_NetworkInstance, IE_NodeId, IE_PDI, IE_PDR_Id, IE_Precedence, \
     IE_QueryURR, IE_RecoveryTimeStamp, IE_RedirectInformation, IE_ReportType, \
     IE_ReportingTriggers, IE_SDF_Filter, IE_SourceInterface, IE_StartTime, \
-    IE_TimeQuota, IE_UE_IP_Address, IE_URR_Id, IE_UR_SEQN, \
+    IE_TimeQuota, IE_UE_IP_Address, IE_URR_Id, IE_UR_SEQN, IE_UserId, \
     IE_FTEID, IE_OuterHeaderCreation, IE_OuterHeaderRemoval, \
     IE_UsageReportTrigger, IE_VolumeMeasurement, IE_ApplicationId, PFCP, \
     PFCPAssociationSetupRequest, PFCPAssociationSetupResponse, \
@@ -27,7 +27,7 @@ from scapy.contrib.gtp import GTP_U_Header, GTPEchoRequest, GTPEchoResponse, \
     GTP_UDPPort_ExtensionHeader, GTP_PDCP_PDU_ExtensionHeader, \
     IE_Recovery, IE_SelectionMode, GTPErrorIndication, \
     IE_GSNAddress, IE_TEIDI
-from scapy.layers.l2 import Ether
+from scapy.layers.l2 import Ether, ARP
 from scapy.layers.inet import IP, UDP, TCP
 from scapy.layers.inet6 import IPv6
 from scapy.layers.tls.all import TLS, TLSClientHello, TLS_Ext_ServerName, \
@@ -61,6 +61,10 @@ NON_APP_RULE_IP_3_V6 = "2001:db8::2:4"
 EXTRA_SDF_IP_V4 = "192.0.9.204"
 EXTRA_SDF_IP_V6 = "2001:db8::3:1"
 
+
+# FIXME: these attributes are absent from scapy but VPP tests do need them
+ARP.who_has = 1
+ARP.is_at = 2
 
 class IPv4Mixin(object):
     drop_ip = DROP_IP_V4
@@ -101,7 +105,8 @@ class IPv4Mixin(object):
             r"^https?://(.*\\.)*(example)\\.com/",
             "upf application TST rule 3001 add ipfilter " +
             "permit out ip from %s to assigned" % APP_RULE_IP_V4,
-            "nat44 enable sessions 1024 endpoint-dependent",
+            # TODO: re-enable after the NAT patches are updated
+            # "nat44 enable sessions 1024 endpoint-dependent",
             "upf nat pool 78.32.0.2 - 78.32.0.25 block_size 512 nwi sgi name testing",
             "upf nat pool 78.32.20.2 - 78.32.20.25 block_size 512 nwi sgi name not-testing",
             "upf ueip pool nwi sgi id mypool",
@@ -120,7 +125,8 @@ class IPv4Mixin(object):
             (cls.if_sgi.remote_ip4, cls.if_sgi.name),
             "upf gtpu endpoint ip %s nwi cp teid 0x80000000/2" % cls.if_cp.local_ip4,
             "upf gtpu endpoint ip %s nwi epc teid 0x80000000/2" % cls.if_grx.local_ip4,
-            "nat44 enable sessions 1024 endpoint-dependent",
+            # TODO: re-enable after the NAT patches are updated
+            # "nat44 enable sessions 1024 endpoint-dependent",
             "upf nat pool 78.32.0.2 - 78.32.0.25 block_size 512 nwi sgi name testing",
             "upf nat pool 78.32.20.2 - 78.32.20.25 block_size 512 nwi sgi name not-testing",
             "upf ueip pool nwi sgi id mypool",
@@ -1635,7 +1641,11 @@ class TestPFCPReencode(framework.VppTestCase):
                     IE_ForwardingParameters(IE_list=[
                         IE_DestinationInterface(interface="Access"),
                         IE_NetworkInstance(instance="access")
-                    ])
+                    ]),
+                    IE_EnterpriseSpecific(
+                        ietype=32779,
+                        enterprise_id=18681,
+                        data=b'testing')
                 ]),
                 IE_CreateFAR(IE_list=[
                     IE_ApplyAction(FORW=1),
@@ -1643,7 +1653,11 @@ class TestPFCPReencode(framework.VppTestCase):
                     IE_ForwardingParameters(IE_list=[
                         IE_DestinationInterface(interface="Access"),
                         IE_NetworkInstance(instance="access")
-                    ])
+                    ]),
+                    IE_EnterpriseSpecific(
+                        ietype=32779,
+                        enterprise_id=18681,
+                        data=b'testing')
                 ]),
                 IE_CreatePDR(IE_list=[
                     IE_FAR_Id(id=6),
@@ -1733,7 +1747,12 @@ class TestPFCPReencode(framework.VppTestCase):
                     IE_URR_Id(id=1)
                 ]),
                 IE_FSEID(ipv4='172.18.1.1', v4=1, seid=0xffde7211a5ab800a),
-                IE_NodeId(id_type="FQDN", id="ergw")
+                IE_NodeId(id_type="FQDN", id="ergw"),
+                IE_UserId(NAIF=1, MSISDNF=1, IMEIF=1, IMSIF=1,
+                          imsi=b'\x09\x09\x60\x00\x02\x00\x00\xf9',
+                          imei=b'\x41\x09\x60\x00\x05\x00\x00\xf9',
+                          msisdn=b'\x54\x43\x44\xf5',
+                          nai="foo@example.com")
             ])
         self.verify_reencode("session_establishment_request", req)
 

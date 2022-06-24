@@ -262,7 +262,7 @@ upf_vnet_load_tcp_hdr_offset (vlib_buffer_t * b)
 
 static_always_inline void
 load_tstamp_offset (vlib_buffer_t * b, flow_direction_t direction,
-		    flow_entry_t * flow)
+		    flow_entry_t * flow, u32 thread_index)
 {
   tcp_header_t *tcp;
   tcp_options_t opts;
@@ -281,7 +281,8 @@ load_tstamp_offset (vlib_buffer_t * b, flow_direction_t direction,
   if (!tcp_opts_tstamp (&opts))
     return;
 
-  flow_tsval_offs (flow, direction) = opts.tsval ; // - tcp_time_now ();
+  flow_tsval_offs (flow, direction) =
+    opts.tsval - tcp_time_tstamp (thread_index);
 }
 
 static uword
@@ -293,6 +294,8 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
   vnet_main_t *vnm = gtm->vnet_main;
   vnet_interface_main_t *im = &vnm->interface_main;
   flowtable_main_t *fm = &flowtable_main;
+  timestamp_nsec_t timestamp;
+  u32 current_time = (u32) vlib_time_now (vm);
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -306,6 +309,7 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
   next_index = node->cached_next_index;
   stats_sw_if_index = node->runtime_data[0];
   stats_n_packets = stats_n_bytes = 0;
+  unix_time_now_nsec_fraction (&timestamp.sec, &timestamp.nsec);
 
   while (n_left_from > 0)
     {
@@ -394,6 +398,8 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
 		     upf_buffer_opaque (b)->gtpu.is_reverse,
 		     flow->is_reverse);
 
+	  vnet_buffer (b)->ip.rx_sw_if_index = vnet_buffer (b)->sw_if_index[VLIB_RX];
+
 	  ftc = &flow_tc (flow, direction);
 
 	  if (flow->is_spliced)
@@ -426,13 +432,13 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      else if (direction == FT_ORIGIN)
 		{
 		  upf_debug ("PROXY_ACCEPT");
-		  load_tstamp_offset (b, direction, flow);
+		  load_tstamp_offset (b, direction, flow, thread_index);
 		  next = UPF_PROXY_INPUT_NEXT_PROXY_ACCEPT;
 		}
 	      else if (direction == FT_REVERSE)
 		{
 		  upf_debug ("INPUT_LOOKUP");
-		  load_tstamp_offset (b, direction, flow);
+		  load_tstamp_offset (b, direction, flow, thread_index);
 		  next = UPF_PROXY_INPUT_NEXT_TCP_INPUT_LOOKUP;
 		}
 	      else
@@ -457,7 +463,6 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  goto stats;
 		}
 
-
 #define IS_DL(_pdr, _far)						\
               ((_pdr)->pdi.src_intf == SRC_INTF_CORE || (_far)->forward.dst_intf == DST_INTF_ACCESS)
 #define IS_UL(_pdr, _far)						\
@@ -468,6 +473,8 @@ upf_proxy_input (vlib_main_t * vm, vlib_node_runtime_t * node,
 				   IS_DL (pdr, far), IS_UL (pdr, far), next);
 	      next = process_urrs (vm, sess, node_name, active, pdr, b,
 				   IS_DL (pdr, far), IS_UL (pdr, far), next);
+	      flow_update_stats (vm, b, flow, is_ip4,
+				 timestamp, current_time);
 
 #undef IS_DL
 #undef IS_UL

@@ -44,6 +44,7 @@
 #include "upf_pfcp_api.h"
 #include "upf_pfcp_server.h"
 #include "upf_ipfilter.h"
+#include "upf_ipfix.h"
 
 #if CLIB_DEBUG > 1
 #define upf_debug clib_warning
@@ -53,10 +54,7 @@
 #endif
 
 upf_main_t upf_main;
-
-#define SESS_CREATE 0
-#define SESS_MODIFY 1
-#define SESS_DEL 2
+qos_pol_cfg_params_st pfcp_rate_cfg_main;
 
 static void pfcp_add_del_ue_ip (const void *ue_ip, void *si, int is_add);
 static void pfcp_add_del_v4_teid (const void *teid, void *si, int is_add);
@@ -120,7 +118,12 @@ VNET_HW_INTERFACE_CLASS (gtpu_hw_class) =
 
 static int
 vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
-			u32 * sw_if_idx)
+			upf_ipfix_policy_t ipfix_policy,
+			ip_address_t * ipfix_collector_ip,
+			u32 ipfix_report_interval,
+			u32 observation_domain_id,
+			u8 * observation_domain_name,
+			u64 observation_point_id, u32 * sw_if_idx)
 {
   vnet_main_t *vnm = upf_main.vnet_main;
   l2input_main_t *l2im = &l2input_main;
@@ -136,8 +139,9 @@ vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
   if (p)
     {
       nwi = vec_elt_at_index (gtm->nwis, p[0]);
-      if (sw_if_index)
+      if (sw_if_idx)
 	*sw_if_idx = nwi->sw_if_index;
+
       return VNET_API_ERROR_IF_ALREADY_EXISTS;
     }
 
@@ -146,6 +150,11 @@ vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
   memset (&nwi->fib_index, ~0, sizeof (nwi->fib_index));
 
   nwi->name = vec_dup (name);
+  nwi->ipfix_policy = ipfix_policy;
+  if (ipfix_collector_ip)
+    ip_address_copy (&nwi->ipfix_collector_ip, ipfix_collector_ip);
+  else
+    ip_address_reset (&nwi->ipfix_collector_ip);
 
   if_index = nwi - gtm->nwis;
 
@@ -192,8 +201,10 @@ vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
   l2im->configs[sw_if_index].bd_index = 0;
 
   /* move into fib table */
-  ip_table_bind (FIB_PROTOCOL_IP4, sw_if_index, ip4_table_id);
-  ip_table_bind (FIB_PROTOCOL_IP6, sw_if_index, ip6_table_id);
+  if (ip_table_bind (FIB_PROTOCOL_IP4, sw_if_index, ip4_table_id) != 0)
+    clib_warning ("failed to bind IPv4 table for NWI");
+  if (ip_table_bind (FIB_PROTOCOL_IP6, sw_if_index, ip6_table_id) != 0)
+    clib_warning ("failed to bind IPv6 table for NWI");
 
   nwi->fib_index[FIB_PROTOCOL_IP4] =
     ip4_fib_table_get_index_for_sw_if_index (sw_if_index);
@@ -216,6 +227,11 @@ vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
 
   hash_set_mem (gtm->nwi_index_by_name, nwi->name, if_index);
 
+  nwi->ipfix_report_interval = ipfix_report_interval;
+  nwi->observation_domain_id = observation_domain_id;
+  nwi->observation_domain_name = vec_dup (observation_domain_name);
+  nwi->observation_point_id = observation_point_id;
+
   if (sw_if_idx)
     *sw_if_idx = nwi->sw_if_index;
 
@@ -223,12 +239,13 @@ vnet_upf_create_nwi_if (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
 }
 
 static int
-vnet_upf_delete_nwi_if (u8 * name, u32 * sw_if_idx)
+vnet_upf_delete_nwi_if (u8 * name)
 {
   vnet_main_t *vnm = upf_main.vnet_main;
   upf_main_t *gtm = &upf_main;
   upf_nwi_t *nwi;
   uword *p;
+  u32 *ipfix_ctx_index;
 
   p = hash_get_mem (gtm->nwi_index_by_name, name);
   if (!p)
@@ -249,18 +266,36 @@ vnet_upf_delete_nwi_if (u8 * name, u32 * sw_if_idx)
   vec_add1 (gtm->free_nwi_hw_if_indices, nwi->hw_if_index);
 
   hash_unset_mem (gtm->nwi_index_by_name, nwi->name);
+  vec_free (nwi->observation_domain_name);
   vec_free (nwi->name);
+
+  vec_foreach (ipfix_ctx_index, nwi->ipfix_context_indices)
+  {
+    upf_unref_ipfix_context_by_index (ipfix_ctx_index);
+  }
+
   pool_put (gtm->nwis, nwi);
 
   return 0;
 }
 
 int
-vnet_upf_nwi_add_del (u8 * name, u32 ip4_table_id, u32 ip6_table_id, u8 add)
+vnet_upf_nwi_add_del (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
+		      upf_ipfix_policy_t ipfix_policy,
+		      ip_address_t * ipfix_collector_ip,
+		      u32 ipfix_report_interval,
+		      u32 observation_domain_id,
+		      u8 * observation_domain_name,
+		      u64 observation_point_id, u8 add)
 {
   return (add) ?
-    vnet_upf_create_nwi_if (name, ip4_table_id, ip6_table_id, NULL) :
-    vnet_upf_delete_nwi_if (name, NULL);
+    vnet_upf_create_nwi_if (name, ip4_table_id, ip6_table_id,
+			    ipfix_policy, ipfix_collector_ip,
+			    ipfix_report_interval,
+			    observation_domain_id,
+			    observation_domain_name,
+			    observation_point_id,
+			    NULL) : vnet_upf_delete_nwi_if (name);
 }
 
 static int
@@ -362,6 +397,20 @@ pfcp_get_association (pfcp_node_id_t * node_id)
   return pool_elt_at_index (gtm->nodes, p[0]);
 }
 
+static u32
+upf_init_association_policer ()
+{
+  qos_pol_cfg_params_st *cfg = &pfcp_rate_cfg_main;
+  upf_main_t *gtm = &upf_main;
+  policer_t *p;
+
+  pool_get (gtm->pfcp_policers, p);
+  memset (p, 0, sizeof (policer_t));
+  pol_logical_2_physical (cfg, p);
+
+  return (p - gtm->pfcp_policers);
+}
+
 upf_node_assoc_t *
 pfcp_new_association (session_handle_t session_handle,
 		      ip46_address_t * lcl_addr, ip46_address_t * rmt_addr,
@@ -391,6 +440,7 @@ pfcp_new_association (session_handle_t session_handle,
       break;
     }
 
+  n->policer_idx = upf_init_association_policer ();
   vlib_increment_simple_counter (&gtm->upf_simple_counters[UPF_ASSOC_COUNTER],
 				 vlib_get_thread_index (), 0, 1);
 
@@ -434,6 +484,7 @@ pfcp_release_association (upf_node_assoc_t * n)
   ASSERT (n->sessions == ~0);
 
   upf_pfcp_server_deferred_free_msgs_by_node (node_id);
+  pool_put_index (gtm->pfcp_policers, n->policer_idx);
 
   pool_put (gtm->nodes, n);
 
@@ -1068,7 +1119,7 @@ upf_delete_nat_binding (upf_session_t * sx)
   --ap->used_blocks;
 
   upf_nat_del_binding =
-    vlib_get_plugin_symbol ("nat_plugin.so", "nat_del_binding");
+    vlib_get_plugin_symbol ("nat_plugin.so", "nat_ed_del_binding");
 
   upf_nat_del_binding (sx->user_addr);
 }
@@ -1088,6 +1139,8 @@ pfcp_free_session (upf_session_t * sx)
 
   if (sx->nat_addr)
     upf_delete_nat_binding (sx);
+
+  free_user_id (&sx->user_id);
 
   clib_spinlock_free (&sx->lock);
   pool_put (gtm->sessions, sx);
@@ -2681,6 +2734,7 @@ format_pfcp_session (u8 * s, va_list * args)
   upf_far_t *far;
   upf_urr_t *urr;
   upf_qer_t *qer;
+  u8 *user_id_str;
 
   s = format (s,
 	      "CP F-SEID: 0x%016" PRIx64 " (%" PRIu64 ") @ %U\n"
@@ -2688,6 +2742,10 @@ format_pfcp_session (u8 * s, va_list * args)
 	      sx->cp_seid, sx->cp_seid, format_ip46_address, &sx->cp_address,
 	      IP46_TYPE_ANY, sx->cp_seid, sx->cp_seid, format_ip46_address,
 	      &sx->up_address, IP46_TYPE_ANY, sx);
+
+  user_id_str = format (0, "%U", format_user_id, &sx->user_id);
+  if (user_id_str)
+    s = format (s, "User ID: %v\n", user_id_str);
 
   if (debug)
     s = format (s, "  SIdx: %u\n  Pointer: %p\n  PDR: %p\n  FAR: %p\n",

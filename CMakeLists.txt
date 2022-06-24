@@ -93,6 +93,8 @@ set(UPF_PLUGIN_SOURCES
   upf/upf_app_db.c
   upf/upf_ipfilter.c
   upf/upf_app_dpo.c
+  upf/upf_ipfix.c
+  upf/upf_ipfix_templates.c
   upf/flowtable_init.c
   upf/flowtable.c
   upf/unittest.c
@@ -123,6 +125,8 @@ set(UPF_PLUGIN_HEADER_FILES
   upf/upf_app_db.h
   upf/flowtable.h
   upf/flowtable_tcp.h
+  upf/upf_ipfix.h
+  upf/upf_ipfix_templates.h
   upf/upf_gtpu_error.def
   upf/version.h
 )
@@ -156,7 +160,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Wall -march=corei7 -mtune=corei7-avx -O3 -g")
 elseif (CMAKE_BUILD_TYPE STREQUAL "Debug")
    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -march=corei7 -mtune=corei7-avx -O0 -g")
-   add_definitions(-DCLIB_DEBUG -fPIC -fstack-protector-all)
+   add_definitions(-DCLIB_DEBUG -DVLIB_BUFFER_TRACE_TRAJECTORY -fPIC -fstack-protector-all)
 endif()
 
 execute_process(

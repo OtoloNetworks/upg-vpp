@@ -9,3 +9,4 @@ artifacts
 *.log
 attic
 build-root
+test/e2e/bin

@@ -48,6 +48,7 @@
 /* Action function shared between message handler and debug CLI */
 #include <upf/flowtable.h>
 #include <upf/upf_app_db.h>
+#include <upf/upf_ipfix.h>
 
 #include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
@@ -205,6 +206,34 @@ vnet_upf_nat_pool_add_del (u8 * nwi_name, ip4_address_t start_addr,
       pool_put (gtm->nat_pools, nat_pool);
     }
   return 0;
+}
+
+void
+upf_pfcp_policer_config_init (upf_main_t * gtm)
+{
+  qos_pol_cfg_params_st *cfg = &pfcp_rate_cfg_main;
+
+  cfg->rate_type = QOS_RATE_PPS;
+  cfg->rnd_type = QOS_ROUND_TO_CLOSEST;
+  cfg->rfc = QOS_POLICER_TYPE_1R2C;
+  cfg->color_aware = 0;
+  cfg->conform_action.action_type = QOS_ACTION_TRANSMIT;
+  cfg->exceed_action.action_type = QOS_ACTION_DROP;
+  cfg->violate_action.action_type = QOS_ACTION_DROP;
+  cfg->rb.pps.cir_pps = 1 << 20;
+  cfg->rb.pps.cb_ms = 1000;
+}
+
+void
+upf_pfcp_policers_recalculate (qos_pol_cfg_params_st * cfg)
+{
+  upf_main_t *gtm = &upf_main;
+  policer_t *p;
+
+  pool_foreach (p, gtm->pfcp_policers)
+  {
+    pol_logical_2_physical (cfg, p);
+  }
 }
 
 int
@@ -579,10 +608,14 @@ upf_init (vlib_main_t * vm)
     hash_create_vec ( /* initial length */ 32, sizeof (u8), sizeof (uword));
 
   error = flowtable_init (vm);
-  if (error)
-    return error;
+  if (!error)
+    error = upf_ipfix_init (vm);
+  if (!error)
+    error = pfcp_server_main_init (vm);
+  if (!error)
+    upf_pfcp_policer_config_init (sm);
 
-  return pfcp_server_main_init (vm);
+  return error;
 }
 
 VLIB_INIT_FUNCTION (upf_init);
@@ -692,7 +725,8 @@ const fib_node_vft_t upf_fp_vft = {
 static clib_error_t *
 upf_policy_init (vlib_main_t * vm)
 {
-  upf_policy_fib_node_type = fib_node_register_new_type ("upf-policy", &upf_fp_vft);
+  upf_policy_fib_node_type =
+    fib_node_register_new_type ("upf-fp", &upf_fp_vft);
   return (NULL);
 }
 
@@ -881,6 +915,20 @@ upf_name_to_labels (u8 * name)
   rv[last_label_index] = (i - last_label_index) - 1;
 
   return rv;
+}
+
+void
+upf_nat_get_src_port (vlib_buffer_t * b, u16 port)
+{
+  flowtable_main_t *fm = &flowtable_main;
+  flow_entry_t *flow;
+  u32 flow_id;
+
+  flow_id = upf_buffer_opaque (b)->gtpu.flow_id;
+  flow = flowtable_get_flow (fm, flow_id);
+  if (!flow)
+    return;
+  flow->nat_sport = clib_net_to_host_u16 (port);
 }
 
 /*

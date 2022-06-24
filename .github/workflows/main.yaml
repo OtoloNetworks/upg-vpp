@@ -34,7 +34,7 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     strategy:
       matrix:
         build_type: [debug, release]
@@ -42,6 +42,11 @@ jobs:
       # avoid conflicts between parallel jobs
       K8S_ID_SUFFIX: ${{ matrix.build_type }}
     steps:
+    # https://github.com/actions/runner/issues/434#issuecomment-992865457
+    - name: Clean the workspace
+      uses: docker://alpine
+      with:
+        args: /bin/sh -c "rm -rf /github/workspace/.* 2>/dev/null || rm -rf /github/workspace/*"
     - name: Login to the registry
       uses: docker/login-action@v1
       with:
@@ -81,8 +86,12 @@ jobs:
         path: image-dev-${{ matrix.build_type }}.txt
 
   checkstyle:
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     steps:
+    - name: Clean the workspace
+      uses: docker://alpine
+      with:
+        args: /bin/sh -c "rm -rf /github/workspace/.* 2>/dev/null || rm -rf /github/workspace/*"
     - name: Login to the registry
       uses: docker/login-action@v1
       with:
@@ -98,7 +107,7 @@ jobs:
       run: make checkstyle
 
   integration:
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +116,10 @@ jobs:
       BUILD_TYPE: ${{ matrix.build_type }}
     needs: build
     steps:
+    - name: Clean the workspace
+      uses: docker://alpine
+      with:
+        args: /bin/sh -c "rm -rf /github/workspace/.* 2>/dev/null || rm -rf /github/workspace/*"
     - name: Login to the registry
       uses: docker/login-action@v1
       with:
@@ -128,7 +141,7 @@ jobs:
         make retest DEV_IMAGE="${dev_image}"
 
   e2e:
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     strategy:
       fail-fast: false
       matrix:
@@ -137,6 +150,10 @@ jobs:
       BUILD_TYPE: ${{ matrix.build_type }}
     needs: build
     steps:
+    - name: Clean the workspace
+      uses: docker://alpine
+      with:
+        args: /bin/sh -c "rm -rf /github/workspace/.* 2>/dev/null || rm -rf /github/workspace/*"
     - name: Login to the registry
       uses: docker/login-action@v1
       with:
@@ -156,7 +173,7 @@ jobs:
       run: |
         dev_image=$(cat image-dev-${BUILD_TYPE}.txt)
         mkdir junit-output
-        make retest-e2e \
+        if ! make retest-e2e \
              DEV_IMAGE="${dev_image}" \
              E2E_RETEST=y \
              E2E_PARALLEL=y \
@@ -167,7 +184,10 @@ jobs:
              E2E_FOCUS="${E2E_FOCUS}" \
              E2E_SKIP="${E2E_SKIP}" \
              E2E_NO_GDB=1 \
-             GRAB_ARTIFACTS=1
+             GRAB_ARTIFACTS=1; then
+          docker run -v "${PWD}:/src" alpine /bin/sh -c "chown -v -R $(id -u).$(id -g) /src/artifacts"
+          exit 1
+        fi
     - name: Upload artifacts for failed tests
       if: failure()
       uses: actions/upload-artifact@v2
@@ -177,7 +197,7 @@ jobs:
 
   # dummy job for release.yaml to wait on
   conclude:
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     needs:
     - checkstyle
     - integration
@@ -190,7 +210,7 @@ jobs:
   slack:
     needs:
     - conclude
-    runs-on: self-hosted
+    runs-on: ["self-hosted", "hugepages"]
     if: always()
     steps:
     - name: Set status

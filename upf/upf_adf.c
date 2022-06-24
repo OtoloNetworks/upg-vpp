@@ -29,6 +29,7 @@
 #include <upf/upf_app_db.h>
 #include <upf/upf_pfcp.h>
 #include <upf/upf_proxy.h>
+#include <upf/upf_ipfix.h>
 
 #if CLIB_DEBUG > 1
 #define upf_debug clib_warning
@@ -429,9 +430,7 @@ upf_application_detection (vlib_main_t * vm, u8 * p,
   origin = app_scan_for_uri (uri, flow, active, FT_ORIGIN, origin);
   if (origin)
     {
-      upf_far_t *far;
-
-      far = pfcp_get_far_by_id (active, origin->far_id);
+      upf_far_t *far = pfcp_get_far_by_id (active, origin->far_id);
       flow->is_redirect = (far
 			   && far->
 			   forward.flags & FAR_F_REDIRECT_INFORMATION);

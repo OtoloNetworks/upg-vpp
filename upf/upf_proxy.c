@@ -1215,8 +1215,6 @@ proxy_server_attach ()
   upf_proxy_main_t *pm = &upf_proxy_main;
   u64 options[APP_OPTIONS_N_OPTIONS];
   vnet_app_attach_args_t _a, *a = &_a;
-  app_worker_t *app_wrk;
-  application_t *app;
   u8 *name;
   int r = 0;
 
@@ -1248,11 +1246,6 @@ proxy_server_attach ()
     }
 
   pm->server_app_index = a->app_index;
-
-  /* Make sure we have a segment manager for connects */
-  app = application_get (pm->server_app_index);
-  app_wrk = application_get_worker (app, 0 /* default wrk only */ );
-  // app_worker_alloc_connects_segment_manager (app_wrk);
 
 out_free:
   vec_free (name);

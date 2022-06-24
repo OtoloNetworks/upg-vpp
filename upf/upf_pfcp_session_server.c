@@ -22,6 +22,8 @@
 #include "upf_pfcp.h"
 #include "upf_pfcp_api.h"
 #include "upf_pfcp_server.h"
+/* for vnet_upf_pfcp_set_polling() */
+#include "flowtable.h"
 
 #if CLIB_DEBUG > 1
 #define upf_debug clib_warning
@@ -158,8 +160,7 @@ static int
 pfcp_session_server_add_segment_callback (u32 client_index,
 					  u64 segment_handle)
 {
-  upf_debug ("called...");
-  return -1;
+  return 0;
 }
 
 static session_cb_vft_t pfcp_session_server_session_cb_vft = {
@@ -250,8 +251,10 @@ pfcp_server_attach (vlib_main_t * vm)
   a->session_cb_vft = &pfcp_session_server_session_cb_vft;
   a->options = options;
   a->options[APP_OPTIONS_SEGMENT_SIZE] = pssm->private_segment_size;
+  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = pssm->private_segment_size;
   a->options[APP_OPTIONS_RX_FIFO_SIZE] = pssm->fifo_size;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] = pssm->fifo_size;
+  a->options[APP_OPTIONS_MAX_FIFO_SIZE] = pssm->fifo_size;	// FIXME
   a->options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_IS_BUILTIN;
   a->options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] = pssm->prealloc_fifos;
 
@@ -418,7 +421,7 @@ pfcp_session_server_main_init (vlib_main_t * vm)
   /* PFPC server defaults */
   pssm->prealloc_fifos = 0;
   pssm->fifo_size = 64 << 10;
-  pssm->private_segment_size = 0;
+  pssm->private_segment_size = 256 << 20;
 
   num_threads = 1 /* main thread */  + vtm->n_threads;
   vec_validate (pssm->vpp_queue, num_threads - 1);
@@ -437,18 +440,25 @@ pfcp_session_server_main_init (vlib_main_t * vm)
 void
 vnet_upf_pfcp_set_polling (vlib_main_t * vm, u8 polling)
 {
-  vlib_node_state_t node_state = VLIB_NODE_STATE_POLLING;
-
   if (!polling)
     {
       clib_warning
 	("Using interrupt mode for the PFCP server. This mode is not "
 	 "recommended for production.");
-      node_state = VLIB_NODE_STATE_INTERRUPT;
+      vlib_node_set_state (vm, pfcp_session_server_process_node.index,
+			   VLIB_NODE_STATE_INTERRUPT);
+      vlib_node_set_state (vm, flowtable_process_node.index,
+			   VLIB_NODE_STATE_POLLING);
+    }
+  else
+    {
+      vlib_node_set_state (vm, pfcp_session_server_process_node.index,
+			   VLIB_NODE_STATE_POLLING);
+      /* no need to expire the flows on timer when there's enough traffic */
+      vlib_node_set_state (vm, flowtable_process_node.index,
+			   VLIB_NODE_STATE_DISABLED);
     }
 
-  vlib_node_set_state (vm, pfcp_session_server_process_node.index,
-		       node_state);
 }
 
 VLIB_INIT_FUNCTION (pfcp_session_server_main_init);

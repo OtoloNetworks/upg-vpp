@@ -36,6 +36,8 @@
 #include <vnet/dpo/dpo.h>
 #include <vnet/adj/adj_types.h>
 #include <vnet/fib/fib_table.h>
+#include <vnet/fib/ip4_fib.h>
+#include <vnet/fib/ip6_fib.h>
 #include <vnet/policer/policer.h>
 #include <vnet/session/session_types.h>
 #include <vlib/vlib.h>
@@ -525,6 +527,15 @@ typedef struct
   u32 forward_index;
 } upf_forwarding_policy_t;
 
+typedef enum
+{
+  UPF_IPFIX_POLICY_NONE,
+  UPF_IPFIX_POLICY_DEFAULT,
+  UPF_IPFIX_POLICY_DEST,
+  UPF_IPFIX_N_POLICIES,
+  UPF_IPFIX_POLICY_UNSPECIFIED = UPF_IPFIX_N_POLICIES
+} __clib_packed upf_ipfix_policy_t;
+
 /* Forward Action Rules */
 typedef struct
 {
@@ -541,6 +552,7 @@ typedef struct
     upf_far_forward_t forward;
     u16 bar_id;
   };
+  upf_ipfix_policy_t ipfix_policy;
 } upf_far_t;
 
 typedef struct
@@ -769,9 +781,6 @@ typedef struct
 #define PFCP_ACTIVE  0
 #define PFCP_PENDING 1
 
-  /** FIFO to hold the DL pkts for this session */
-  vlib_buffer_t *dl_fifo;
-
   /* DPO locks */
   u32 dpo_locks;
 
@@ -784,6 +793,8 @@ typedef struct
   upf_nat_addr_t *nat_addr;
 
   f64 unix_time_start;
+
+  pfcp_user_id_t user_id;
 
   u16 generation;
 } upf_session_t;
@@ -848,6 +859,16 @@ typedef struct
   /* vnet intfc index */
   u32 sw_if_index;
   u32 hw_if_index;
+
+  upf_ipfix_policy_t ipfix_policy;
+  ip_address_t ipfix_collector_ip;
+  u32 ipfix_report_interval;
+
+  u32 observation_domain_id;
+  u64 observation_point_id;
+  u8 *observation_domain_name;
+
+  u32 *ipfix_context_indices;
 } upf_nwi_t;
 
 typedef struct
@@ -864,6 +885,8 @@ typedef struct
 
   u32 sessions;
   u32 heartbeat_handle;
+
+  u32 policer_idx;
 } upf_node_assoc_t;
 
 typedef u8 *regex_t;
@@ -999,11 +1022,13 @@ typedef struct
   upf_ue_ip_pool_info_t *ueip_pools;
   uword *ue_ip_pool_index_by_identity;
 
+  policer_t *pfcp_policers;
 } upf_main_t;
 
 extern const fib_node_vft_t upf_vft;
 extern const fib_node_vft_t upf_fp_vft;
 extern upf_main_t upf_main;
+extern qos_pol_cfg_params_st pfcp_rate_cfg_main;
 
 extern vlib_node_registration_t upf_gtpu4_input_node;
 extern vlib_node_registration_t upf_gtpu6_input_node;
@@ -1038,7 +1063,12 @@ int vnet_upf_pfcp_endpoint_add_del (ip46_address_t * ip, u32 fib_index,
 				    u8 add);
 void vnet_upf_pfcp_set_polling (vlib_main_t * vm, u8 polling);
 int vnet_upf_nwi_add_del (u8 * name, u32 ip4_table_id, u32 ip6_table_id,
-			  u8 add);
+			  upf_ipfix_policy_t ipfix_policy,
+			  ip_address_t * ipfix_collector_ip,
+			  u32 ipfix_report_interval,
+			  u32 observation_domain_id,
+			  u8 * observation_domain_name,
+			  u64 observation_point_id, u8 add);
 int vnet_upf_upip_add_del (ip4_address_t * ip4, ip6_address_t * ip6,
 			   u8 * name, u8 intf, u32 teid, u32 mask, u8 add);
 
@@ -1071,11 +1101,37 @@ int vnet_upf_ue_ip_pool_add_del (u8 * identity, u8 * nwi_name, int is_add);
 void upf_ip_lookup_tx (u32 bi, int is_ip4);
 void upf_gtpu_error_ind (vlib_buffer_t * b0, int is_ip4);
 
+void upf_pfcp_policers_relalculate (qos_pol_cfg_params_st * cfg);
+
 static_always_inline void
 upf_vnet_buffer_l3_hdr_offset_is_current (vlib_buffer_t * b)
 {
   vnet_buffer (b)->l3_hdr_offset = b->current_data;
   b->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+}
+
+/* from src/vnet/ip/ping.c */
+static_always_inline fib_node_index_t
+upf_ip46_fib_table_lookup_host (u32 fib_index, ip46_address_t * pa46,
+				int is_ip4)
+{
+  fib_node_index_t fib_entry_index = is_ip4 ?
+    ip4_fib_table_lookup (ip4_fib_get (fib_index), &pa46->ip4, 32) :
+    ip6_fib_table_lookup (fib_index, &pa46->ip6, 128);
+  return fib_entry_index;
+}
+
+/* from src/vnet/ip/ping.c */
+static_always_inline u32
+upf_ip46_get_resolving_interface (u32 fib_index, ip46_address_t * pa46,
+				  int is_ip4)
+{
+  fib_node_index_t fib_entry_index;
+
+  ASSERT (~0 != fib_index);
+
+  fib_entry_index = upf_ip46_fib_table_lookup_host (fib_index, pa46, is_ip4);
+  return fib_entry_get_resolving_interface (fib_entry_index);
 }
 
 void upf_proxy_init (vlib_main_t * vm);
@@ -1099,6 +1155,8 @@ void upf_fpath_stack_dpo (upf_forwarding_policy_t * p);
 int vnet_upf_policy_fn (fib_route_path_t * rpaths, u8 * id, u8 action);
 u8 *format_upf_policy (u8 * s, va_list * args);
 u8 *upf_name_to_labels (u8 * name);
+
+__clib_export void upf_nat_get_src_port (vlib_buffer_t * b, u16 port);
 
 #endif /* __included_upf_h__ */
 

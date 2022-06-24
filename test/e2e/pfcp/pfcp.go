@@ -87,6 +87,7 @@ const (
 
 	ReportingTriggers_QUVTI = 0x0080 // Quota Validity Time
 	ReportingTriggers_PERIO = 0x0100 // Periodic Reporting
+	ReportingTriggers_VOLQU = 0x0001 // Volume Quota
 
 	maxRequestAttempts = 10
 
@@ -396,12 +397,15 @@ type PFCPConnection struct {
 }
 
 type PFCPReport struct {
-	UplinkVolume   *uint64
-	DownlinkVolume *uint64
-	TotalVolume    *uint64
-	Duration       *time.Duration
-	StartTime      time.Time
-	EndTime        time.Time
+	UplinkVolume        *uint64
+	DownlinkVolume      *uint64
+	TotalVolume         *uint64
+	UplinkPacketCount   *uint64
+	DownlinkPacketCount *uint64
+	TotalPacketCount    *uint64
+	Duration            *time.Duration
+	StartTime           time.Time
+	EndTime             time.Time
 }
 
 func (ms PFCPReport) String() string {
@@ -414,6 +418,15 @@ func (ms PFCPReport) String() string {
 	}
 	if ms.TotalVolume != nil {
 		s += fmt.Sprintf(" total=%d", *ms.TotalVolume)
+	}
+	if ms.UplinkPacketCount != nil {
+		s += fmt.Sprintf(" uplinkCount=%d", *ms.UplinkPacketCount)
+	}
+	if ms.DownlinkPacketCount != nil {
+		s += fmt.Sprintf(" downlinkCount=%d", *ms.DownlinkPacketCount)
+	}
+	if ms.TotalPacketCount != nil {
+		s += fmt.Sprintf(" totalCount=%d", *ms.TotalPacketCount)
 	}
 	if ms.Duration != nil {
 		s += fmt.Sprintf(" duration=%v", ms.Duration)
@@ -1407,6 +1420,18 @@ func GetMeasurement(m message.Message) (*PFCPMeasurement, error) {
 
 			if parsedVolMeasurement.HasTOVOL() {
 				r.TotalVolume = &parsedVolMeasurement.TotalVolume
+			}
+
+			if parsedVolMeasurement.HasDLNOP() {
+				r.DownlinkPacketCount = &parsedVolMeasurement.DownlinkNumberOfPackets
+			}
+
+			if parsedVolMeasurement.HasULNOP() {
+				r.UplinkPacketCount = &parsedVolMeasurement.UplinkNumberOfPackets
+			}
+
+			if parsedVolMeasurement.HasTONOP() {
+				r.TotalPacketCount = &parsedVolMeasurement.TotalNumberOfPackets
 			}
 		}
 

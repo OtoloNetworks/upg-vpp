@@ -46,8 +46,11 @@ type SessionConfig struct {
 	MonitoringTime     time.Time
 	VTime              time.Duration
 	MeasurementPeriod  time.Duration
+	VolumeQuota        uint32
 	ForwardingPolicyID string
 	NatPoolName        string
+	IMSI               string
+	IPFIXTemplate      string
 }
 
 const (
@@ -81,15 +84,16 @@ func (cfg SessionConfig) outerHeaderRemoval() *ie.IE {
 	return ie.NewOuterHeaderRemoval(pfcp.OuterHeaderRemoval_GTPUUDPIPV6, 0)
 }
 
-
 // From IANA Private Enterprise Numbers Registry, Broadband Forum Enterprise ID is 3561 (0x0DE9)
 // Enterprise Specific IE Types are marked with 0x8000 mask
 const (
 	BBF_EID                 = 3561
+	TP_EID                  = 18681
 	ETYPE_MASK              = 0x8000
 	BBF_TYPE_APPLY_ACTION   = 15
 	BBF_TYPE_NAT_PORT_BLOCK = 18
 	BBF_APPLY_ACTION_NAT    = 1
+	TP_IPFIX_TEMPLATE       = 11
 )
 
 func newVendorSpecificStringIE(itype uint16, eid uint16, data string) *ie.IE {
@@ -98,6 +102,22 @@ func newVendorSpecificStringIE(itype uint16, eid uint16, data string) *ie.IE {
 
 func newVendorSpecificU8IE(itype uint16, eid uint16, val uint8) *ie.IE {
 	return ie.NewVendorSpecificIE(itype, eid, []byte{val})
+}
+
+func (cfg SessionConfig) ipfixTemplateIEs() []*ie.IE {
+	if cfg.IPFIXTemplate == "" {
+		return nil
+	}
+
+	template := cfg.IPFIXTemplate
+	if template == "none" {
+		// "none" template is specified as an empty string
+		template = ""
+	}
+	return []*ie.IE{
+		newVendorSpecificStringIE(
+			ETYPE_MASK|TP_IPFIX_TEMPLATE, TP_EID, cfg.IPFIXTemplate),
+	}
 }
 
 func (cfg SessionConfig) forwardFAR(farID uint32) *ie.IE {
@@ -126,10 +146,13 @@ func (cfg SessionConfig) forwardFAR(farID uint32) *ie.IE {
 		fwParams = append(fwParams, newVendorSpecificU8IE(ETYPE_MASK|BBF_TYPE_APPLY_ACTION, BBF_EID, BBF_APPLY_ACTION_NAT))
 		fwParams = append(fwParams, newVendorSpecificStringIE(ETYPE_MASK|BBF_TYPE_NAT_PORT_BLOCK, BBF_EID, cfg.NatPoolName))
 	}
-	return ie.NewCreateFAR(
+
+	ies := append([]*ie.IE{
 		ie.NewFARID(farID),
 		ie.NewApplyAction(pfcp.ApplyAction_FORW),
-		ie.NewForwardingParameters(fwParams...))
+		ie.NewForwardingParameters(fwParams...),
+	}, cfg.ipfixTemplateIEs()...)
+	return ie.NewCreateFAR(ies...)
 }
 
 func (cfg SessionConfig) reverseFAR(farID uint32) *ie.IE {
@@ -156,10 +179,12 @@ func (cfg SessionConfig) reverseFAR(farID uint32) *ie.IE {
 		panic("bad UPGMode")
 	}
 
-	return ie.NewCreateFAR(
+	ies := append([]*ie.IE{
 		ie.NewFARID(farID),
 		ie.NewApplyAction(pfcp.ApplyAction_FORW),
-		ie.NewForwardingParameters(fwParams...))
+		ie.NewForwardingParameters(fwParams...),
+	}, cfg.ipfixTemplateIEs()...)
+	return ie.NewCreateFAR(ies...)
 }
 
 func (cfg SessionConfig) ueIPAddress(flags uint8) *ie.IE {
@@ -311,12 +336,33 @@ func (cfg SessionConfig) CreateOrUpdateURR(id uint32, update bool) *ie.IE {
 	return urr
 }
 
+func (cfg SessionConfig) CreateVolumeURR(id uint32) *ie.IE {
+	triggers := uint16(0)
+	triggers |= pfcp.ReportingTriggers_VOLQU
+	urr := ie.NewCreateURR(ie.NewURRID(id),
+		ie.NewMeasurementMethod(0, 1, 1),
+		ie.NewVolumeQuota(0x01, 1024, 0, 0),
+		ie.NewReportingTriggers(triggers))
+	return urr
+}
+
+func (cfg SessionConfig) DeleteURR(id uint32) *ie.IE {
+	return ie.NewRemoveURR(ie.NewURRID(id))
+}
+
 func (cfg SessionConfig) CreateURRs() []*ie.IE {
+	if cfg.VolumeQuota != 0 {
+		return []*ie.IE{cfg.CreateVolumeURR(1), cfg.CreateVolumeURR(2)}
+	}
 	return []*ie.IE{cfg.CreateOrUpdateURR(1, false), cfg.CreateOrUpdateURR(2, false)}
 }
 
 func (cfg SessionConfig) UpdateURRs() []*ie.IE {
 	return []*ie.IE{cfg.CreateOrUpdateURR(1, true), cfg.CreateOrUpdateURR(2, true)}
+}
+
+func (cfg SessionConfig) DeleteURRs() []*ie.IE {
+	return []*ie.IE{cfg.DeleteURR(1), cfg.DeleteURR(2)}
 }
 
 func (cfg SessionConfig) SessionIEs() []*ie.IE {
@@ -325,7 +371,13 @@ func (cfg SessionConfig) SessionIEs() []*ie.IE {
 		ies = append(ies, cfg.CreateURRs()...)
 	}
 
-	return append(ies, cfg.CreatePDRs()...)
+	ies = append(ies, cfg.CreatePDRs()...)
+	if cfg.IMSI != "" {
+		// flags == 1: IMSIF bit set
+		ies = append(ies, ie.NewUserID(1, cfg.IMSI, "", "", ""))
+	}
+
+	return ies
 }
 
 func (cfg SessionConfig) CreatePDRs() []*ie.IE {
