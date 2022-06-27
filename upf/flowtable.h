@@ -429,7 +429,7 @@ flow_update_stats (vlib_main_t * vm, vlib_buffer_t * b,
 	     ip4_next_header ((ip4_header_t *)
 			      iph) : ip6_next_header ((ip6_header_t *) iph));
   u16 l4_len = len - (l4h - iph);
-  u16 diff;
+  u16 diff = 0;
   flow_direction_t is_reverse =
     is_ip4 ?
     ip4_packet_is_reverse ((ip4_header_t *) iph) :

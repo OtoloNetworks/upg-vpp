@@ -18,9 +18,7 @@ if (NOT HYPERSCAN_INCLUDE_DIR)
   return()
 endif()
 
-vpp_plugin_find_library(upf HYPERSCAN_LIB1 hs)
-vpp_plugin_find_library(upf HYPERSCAN_LIB2 hs_runtime)
-
+vpp_plugin_find_library(upf HYPERSCAN_LIB hs)
 include_directories(${HYPERSCAN_INCLUDE_DIR})
 
 add_vpp_plugin(upf
@@ -49,6 +47,8 @@ add_vpp_plugin(upf
   upf_app_db.c
   upf_ipfilter.c
   upf_app_dpo.c
+  upf_ipfix.c
+  upf_ipfix_templates.c
   flowtable_init.c
   flowtable.c
   unittest.c
@@ -69,6 +69,5 @@ add_vpp_plugin(upf
   upf.api
 
   LINK_LIBRARIES
-  ${HYPERSCAN_LIB1}
-  ${HYPERSCAN_LIB2}
+  ${HYPERSCAN_LIB}
 )

@@ -1417,7 +1417,7 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
   struct rules *rules;
   u8 *policy_id = NULL;
   uword *hash_ptr;
-  upf_forwarding_policy_t *fp_entry;
+  // upf_forwarding_policy_t *fp_entry;
 
   if (pfcp_make_pending_far (sx) != 0)
     {
@@ -1540,9 +1540,9 @@ handle_create_far (upf_session_t * sx, pfcp_create_far_t * create_far,
 		create->forward.forwarding_policy.identifier =
 		  vec_dup (far->forwarding_parameters.
 			   forwarding_policy.identifier);
-		fp_entry =
-		  pool_elt_at_index (gtm->upf_forwarding_policies,
-				     hash_ptr[0]);
+		// fp_entry =
+		//   pool_elt_at_index (gtm->upf_forwarding_policies,
+		//   		     hash_ptr[0]);
 		create->forward.fp_pool_index = hash_ptr[0];
 	      }
 	    else
@@ -1583,7 +1583,7 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
   pfcp_update_far_t *far;
   u8 *policy_id = NULL;
   uword *hash_ptr;
-  upf_forwarding_policy_t *fp_entry;
+  // upf_forwarding_policy_t *fp_entry;
 
   if (pfcp_make_pending_far (sx) != 0)
     {
@@ -1696,9 +1696,9 @@ handle_update_far (upf_session_t * sx, pfcp_update_far_t * update_far,
 	    hash_ptr = hash_get_mem (gtm->forwarding_policy_by_id, policy_id);
 	    if (hash_ptr)
 	      {
-		fp_entry =
-		  pool_elt_at_index (gtm->upf_forwarding_policies,
-				     hash_ptr[0]);
+		// fp_entry =
+		//   pool_elt_at_index (gtm->upf_forwarding_policies,
+		// 		     hash_ptr[0]);
 		update->forward.flags |= FAR_F_FORWARDING_POLICY;
 		update->forward.forwarding_policy.identifier =
 		  vec_dup (far->update_forwarding_parameters.

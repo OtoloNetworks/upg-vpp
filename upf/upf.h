@@ -1101,7 +1101,7 @@ int vnet_upf_ue_ip_pool_add_del (u8 * identity, u8 * nwi_name, int is_add);
 void upf_ip_lookup_tx (u32 bi, int is_ip4);
 void upf_gtpu_error_ind (vlib_buffer_t * b0, int is_ip4);
 
-void upf_pfcp_policers_relalculate (qos_pol_cfg_params_st * cfg);
+void upf_pfcp_policers_recalculate (qos_pol_cfg_params_st * cfg);
 
 static_always_inline void
 upf_vnet_buffer_l3_hdr_offset_is_current (vlib_buffer_t * b)
