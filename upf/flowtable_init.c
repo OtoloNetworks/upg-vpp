@@ -91,7 +91,7 @@ flowtable_init_cpu (flowtable_main_t * fm, u32 cpu_index)
   fmt->next_check = ~0;
 
   /* alloc TIMER_MAX_LIFETIME heads from the timers pool and fill them with defaults */
-  pool_validate_index (fmt->timers, TIMER_MAX_LIFETIME - 1);
+  // pool_validate_index (fmt->timers, TIMER_MAX_LIFETIME - 1);
   upf_debug ("POOL SIZE %u", pool_elts (fmt->timers));
 
   pool_foreach (timer_slot, fmt->timers)
