@@ -444,6 +444,11 @@ pfcp_new_association (session_handle_t session_handle,
   vlib_increment_simple_counter (&gtm->upf_simple_counters[UPF_ASSOC_COUNTER],
 				 vlib_get_thread_index (), 0, 1);
 
+  upf_pfcp_associnfo
+    (gtm,
+     "PFCP Association established: node %U, local IP %U, remote IP %U\n",
+     format_node_id, &n->node_id, format_ip46_address, &n->lcl_addr,
+     IP46_TYPE_ANY, format_ip46_address, &n->rmt_addr, IP46_TYPE_ANY);
   return n;
 }
 
@@ -453,6 +458,12 @@ pfcp_release_association (upf_node_assoc_t * n)
   upf_main_t *gtm = &upf_main;
   u32 node_id = n - gtm->nodes;
   u32 idx = n->sessions;
+
+  upf_pfcp_associnfo
+    (gtm,
+     "PFCP Association released: node %U, local IP %U, remote IP %U\n",
+     format_node_id, &n->node_id, format_ip46_address, &n->lcl_addr,
+     IP46_TYPE_ANY, format_ip46_address, &n->rmt_addr, IP46_TYPE_ANY);
 
   switch (n->node_id.type)
     {
@@ -466,8 +477,6 @@ pfcp_release_association (upf_node_assoc_t * n)
       vec_free (n->node_id.fqdn);
       break;
     }
-
-  upf_debug ("pfcp_release_association idx: %u");
 
   while (idx != ~0)
     {
@@ -593,6 +602,8 @@ pfcp_create_session (upf_node_assoc_t * assoc,
   /*Init TEID by choose_id hash lookup table */
   sx->teid_by_chid =
     sparse_vec_new ( /*elt bytes */ sizeof (u32), /*bits in index */ 8);
+
+  sx->first_flow_index = ~0;
 
   vlib_worker_thread_barrier_release (vm);
 
@@ -1129,8 +1140,24 @@ pfcp_free_session (upf_session_t * sx)
 {
   vlib_main_t *vm = vlib_get_main ();
   upf_main_t *gtm = &upf_main;
+  flowtable_main_t *fm = &flowtable_main;
+  u32 flow_index, next;
+  u32 now = (u32) vlib_time_now (vm);
 
   vlib_worker_thread_barrier_sync (vm);
+
+  /*
+   * Remove the flows belonging to the session before freeing the
+   * session, so flow reporting can still be done on these flows
+   */
+  for (flow_index = sx->first_flow_index; flow_index != ~0; flow_index = next)
+    {
+      flow_entry_t *f = flowtable_get_flow (fm, flow_index);
+      next = f->next_session_flow_index;
+      flowtable_entry_remove (fm, f, now);
+      /* make sure session_flow_unlink_handler has been called */
+      ASSERT (sx->first_flow_index == next);
+    }
 
   for (size_t i = 0; i < ARRAY_LEN (sx->rules); i++)
     pfcp_free_rules (sx, i);
@@ -1146,7 +1173,47 @@ pfcp_free_session (upf_session_t * sx)
   pool_put (gtm->sessions, sx);
 
   vlib_worker_thread_barrier_release (vm);
+}
 
+int
+session_flow_unlink_handler (flowtable_main_t * fm, flow_entry_t * flow,
+			     flow_direction_t direction, u32 now)
+{
+  upf_main_t *gtm = &upf_main;
+  upf_session_t *sx = pool_elt_at_index (gtm->sessions, flow->session_index);
+  u32 flow_index = flow - fm->flows;
+  ASSERT (!pool_is_free_index (fm->flows, flow_index));
+
+  if (sx->first_flow_index == flow_index)
+    sx->first_flow_index = flow->next_session_flow_index;
+  else
+    {
+      /*
+       * We could use a doubly-linked list for the session flows,
+       * making this part faster, but that would further enlarge the
+       * flow_entry_t structure, lowering cache efficiency, or would
+       * require a separate list for the session flow linkage. For
+       * now, we consider that the session shouldn't have too many
+       * flows in it to traverse that list upon flow expiration
+       */
+      u32 cur_flow_index;
+      flow_entry_t *cur_flow;
+      for (cur_flow_index = sx->first_flow_index; cur_flow_index != ~0;
+	   cur_flow_index = cur_flow->next_session_flow_index)
+	{
+	  cur_flow = flowtable_get_flow (fm, cur_flow_index);
+	  if (cur_flow->next_session_flow_index == flow_index)
+	    {
+	      cur_flow->next_session_flow_index =
+		flow->next_session_flow_index;
+	      break;
+	    }
+	}
+
+      /* make sure the flow was present in the list */
+      ASSERT (cur_flow_index != ~0);
+    }
+  return 0;
 }
 
 #define pfcp_rule_vector_fns(t, REMOVE)					\

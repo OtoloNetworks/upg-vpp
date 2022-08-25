@@ -380,6 +380,21 @@ vnet_upf_node_id_set (const pfcp_node_id_t * node_id)
   return VNET_API_ERROR_INVALID_ARGUMENT;
 }
 
+int
+vnet_upf_pfcp_heartbeat_config (u32 timeout, u32 retries)
+{
+  pfcp_server_main_t *psm = &pfcp_server_main;
+
+  if (!timeout || timeout > PFCP_MAX_HB_INTERVAL
+      || retries > PFCP_MAX_HB_RETRIES)
+    return -1;
+
+  psm->hb_cfg.timeout = timeout;
+  psm->hb_cfg.retries = retries;
+
+  return 0;
+}
+
 #if 0
 // TODO
 static int
@@ -498,6 +513,29 @@ upf_format_buffer_opaque_helper (const vlib_buffer_t * b, u8 * s)
   return s;
 }
 
+static int
+flow_remove_counter_handler (flowtable_main_t * fm, flow_entry_t * flow,
+			     flow_direction_t direction, u32 now)
+{
+  upf_main_t *gtm = &upf_main;
+
+  vlib_decrement_simple_counter (&gtm->upf_simple_counters
+				 [UPF_FLOW_COUNTER],
+				 vlib_get_thread_index (), 0, 1);
+
+  if (flow->is_spliced)
+    vlib_decrement_simple_counter (&gtm->upf_simple_counters
+				   [UPF_FLOWS_STITCHED],
+				   vlib_get_thread_index (), 0, 1);
+
+  if (flow->spliced_dirty)
+    vlib_decrement_simple_counter (&gtm->upf_simple_counters
+				   [UPF_FLOWS_STITCHED_DIRTY_FIFOS],
+				   vlib_get_thread_index (), 0, 1);
+
+  return 0;
+}
+
 static clib_error_t *
 upf_config_fn (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -523,12 +561,14 @@ static clib_error_t *
 upf_init (vlib_main_t * vm)
 {
   upf_main_t *sm = &upf_main;
+  flowtable_main_t *fm = &flowtable_main;
   clib_error_t *error;
 
   sm->vnet_main = vnet_get_main ();
   sm->vlib_main = vm;
   sm->pfcp_spec_version = 15;
   sm->rand_base = random_default_seed ();
+  sm->log_class = vlib_log_register_class ("upf", 0);
 
   if ((error = vlib_call_init_function (vm, upf_proxy_main_init)))
     return error;
@@ -614,6 +654,11 @@ upf_init (vlib_main_t * vm)
     error = pfcp_server_main_init (vm);
   if (!error)
     upf_pfcp_policer_config_init (sm);
+
+  flowtable_add_event_handler (fm, FLOW_EVENT_REMOVE,
+			       flow_remove_counter_handler);
+  flowtable_add_event_handler (fm, FLOW_EVENT_UNLINK,
+			       session_flow_unlink_handler);
 
   return error;
 }

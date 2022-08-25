@@ -41,6 +41,7 @@
 #include <vnet/policer/policer.h>
 #include <vnet/session/session_types.h>
 #include <vlib/vlib.h>
+#include <vlib/log.h>
 
 #include "pfcp.h"
 #include "flowtable.h"
@@ -796,6 +797,9 @@ typedef struct
 
   pfcp_user_id_t user_id;
 
+  /* per-session flow list linkage */
+  u32 first_flow_index;
+
   u16 generation;
 } upf_session_t;
 
@@ -960,7 +964,7 @@ typedef struct
   /* vector of encap tunnel instances */
   upf_session_t *sessions;
 
-  /* lookup tunnel by key */
+  /* lookup session by id */
   uword *session_by_id;		/* keyed session id */
 
   /* lookup tunnel by TEID */
@@ -1023,6 +1027,8 @@ typedef struct
   uword *ue_ip_pool_index_by_identity;
 
   policer_t *pfcp_policers;
+
+  vlib_log_class_t log_class;
 } upf_main_t;
 
 extern const fib_node_vft_t upf_vft;
@@ -1078,6 +1084,8 @@ int vnet_upf_tdf_ul_table_add_del (u32 vrf, fib_protocol_t fproto,
 				   u32 table_id, u8 add);
 
 int vnet_upf_node_id_set (const pfcp_node_id_t * node_id);
+
+int vnet_upf_pfcp_heartbeat_config (u32 timeout, u32 retires);
 
 void upf_session_dpo_add_or_lock (dpo_proto_t dproto, upf_session_t * sx,
 				  dpo_id_t * dpo);
