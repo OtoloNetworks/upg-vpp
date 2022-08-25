@@ -1346,7 +1346,7 @@ upf_show_flows_command_fn (vlib_main_t * vm,
 			   vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  clib_error_t *error = NULL;
+  //clib_error_t *error;
   u32 cpu_index;
   flowtable_main_t *fm = &flowtable_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
@@ -1364,7 +1364,7 @@ upf_show_flows_command_fn (vlib_main_t * vm,
 	    ;
 	  else
 	    {
-	      error = unformat_parse_error (line_input);
+	      unformat_parse_error (line_input);
 	      unformat_free (line_input);
 	      goto done;
 	    }
@@ -1718,7 +1718,7 @@ upf_pfcp_heartbeat_config_command_fn (vlib_main_t * vm,
 				      vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  upf_main_t *gtm = &upf_main;
+  //upf_main_t *gtm = &upf_main;
   clib_error_t *error = NULL;
   u32 timeout = ~0;
   u32 retries = ~0;
@@ -1739,7 +1739,7 @@ upf_pfcp_heartbeat_config_command_fn (vlib_main_t * vm,
 
   rv = vnet_upf_pfcp_heartbeat_config (timeout, retries);
   if (rv)
-    error = clib_return_error ("Invalid parameters");
+    error = clib_error_return (0, "Invalid parameters");
   return error;
 }
 
