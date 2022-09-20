@@ -7940,7 +7940,6 @@ decode_vector_ie (const struct pfcp_ie_def *def, u8 * ie, u16 length, void *p,
   u8 **v = (u8 **) p;
   uword vl;
   int r;
-  vec_attr_t va = { .elt_sz = def->length };
 
   /*
    * black magic to expand a vector without having know the element type...
