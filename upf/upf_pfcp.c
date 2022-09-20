@@ -2556,7 +2556,7 @@ process_urrs (vlib_main_t * vm, upf_session_t * sess,
 
   if (PREDICT_FALSE (status != URR_OK))
     {
-      vec_validate (uev, sizeof (upf_event_urr_hdr_t));
+      vec_validate_hap (uev, 0, sizeof (upf_event_urr_hdr_t), 0, 0);
       ueh = (upf_event_urr_hdr_t *) vec_header (uev);
       ueh->session_idx = (uword) (sess - gtm->sessions);
       ueh->cp_seid = sess->cp_seid;

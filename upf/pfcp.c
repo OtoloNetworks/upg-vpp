@@ -235,7 +235,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
 #define put_u8(V,I)				\
   do {						\
     *((u8 *)&(V)[_vec_len((V))]) = (I);		\
-    vec_inc_len((V), sizeof(u8));		\
+    vec_inc_len ((V), sizeof(u8));		\
   } while (0)
 
 #define get_u8(V)				\
@@ -246,7 +246,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
 #define put_u16(V,I)				\
   do {						\
     *((u16 *)&(V)[_vec_len((V))]) = htons((I));	\
-    vec_inc_len((V), sizeof(u16));		\
+    vec_inc_len ((V), sizeof(u16));		\
   } while (0)
 
 #define get_u16(V)				\
@@ -257,7 +257,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
 #define put_u16_little(V,I)						\
   do {									\
     *((u16 *)&(V)[_vec_len((V))]) = clib_host_to_little_u16((I));	\
-    vec_inc_len((V), sizeof(u16));					\
+    vec_inc_len ((V), sizeof(u16));					\
   } while (0)
 
 #define get_u16_little(V)				\
@@ -270,7 +270,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
     (V)[_vec_len((V))] = (I) >> 16;			\
     (V)[_vec_len((V)) + 1] = ((I) >> 8) & 0xff;		\
     (V)[_vec_len((V)) + 2] = (I) & 0xff;		\
-    vec_inc_len((V), 3);			\
+    vec_inc_len ((V), 3);				\
   } while (0)
 
 #define get_u24(V)						\
@@ -281,7 +281,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
 #define put_u32(V,I)				\
   do {						\
     *((u32 *)&(V)[_vec_len((V))]) = htonl((I));	\
-    vec_inc_len((V), sizeof(u32));		\
+    vec_inc_len ((V), sizeof(u32));		\
   } while (0)
 
 #define get_u32(V)				\
@@ -296,7 +296,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
     (V)[_vec_len((V)) + 2] = ((I) >> 16) & 0xff;	\
     (V)[_vec_len((V)) + 3] = ((I) >> 8) & 0xff;		\
     (V)[_vec_len((V)) + 4] = (I) & 0xff;		\
-    vec_inc_len((V), 5);				\
+    vec_inc_len ((V), 5);				\
   } while (0)
 
 #define get_u8_to_u64(V, Idx) ({u64 _V = (u8)((V)[(Idx)]); _V; })
@@ -313,7 +313,7 @@ format_pfcp_msg_hdr (u8 * s, va_list * args)
 #define put_u64(V,I)					\
   do {							\
     *((u64 *)&(V)[_vec_len((V))]) = htobe64((I));	\
-    vec_inc_len((V), sizeof(u64));			\
+    vec_inc_len ((V), sizeof(u32));			\
   } while (0)
 
 #define get_u64(V)				\
@@ -352,7 +352,7 @@ typedef union
   do {						\
     u8 *_t = vec_end((V));			\
     *(u32 *)_t = (IP).as_u32;			\
-    vec_inc_len((V), 4);	\
+    vec_inc_len((V), 4);			\
   } while (0)
 
 #define get_ip6(IP,V)				\
@@ -367,7 +367,7 @@ typedef union
     u8 *_t = vec_end((V));			\
     ((u64 *)_t)[0] = (IP).as_u64[0];		\
     ((u64 *)_t)[1] = (IP).as_u64[1];		\
-    vec_inc_len((V), 16);	\
+    vec_inc_len((V), 16);			\
 } while (0)
 
 #define put_ip46_ip4(V,IP)			\
@@ -395,7 +395,7 @@ typedef union
 #define finalize_msg(V,P)			\
   do {						\
     set_msg_hdr_length(V,(P) - 4);		\
-    vec_set_len((V), (P));			\
+    vec_set_len((V), P);			\
   } while (0)
 
 /* generic IEs */
@@ -7946,8 +7946,8 @@ decode_vector_ie (const struct pfcp_ie_def *def, u8 * ie, u16 length, void *p,
    * black magic to expand a vector without having know the element type...
    */
   vl = vec_len (*v);
-  // *v = _vec_resize (*v, 1, (vl + 1) * def->length, 0, 0);
-  *v = _vec_realloc_internal(*v, (vl + 1), &va);
+  vec_attr_t va = {.elt_sz = (vl + 1) * def->length };
+  *v = _vec_realloc_internal (*v, 1, &va);
   memset (*v + (vl * def->length), 0, def->length);
   vec_set_len (*v, vl);
 
@@ -8104,14 +8104,6 @@ encode_ie (const struct pfcp_group_ie_def *item,
     finalize_ie (*vec, hdr, _vec_len (*vec));
   else
     vec_set_len (*vec, hdr);
-
-#if 0
-  /*
-   * Make sure that we didn't have heap corruption
-   */
-  ASSERT (_vec_len (*vec) <=
-	  clib_mem_size ((void *) (*vec) - vec_get_header_size (*vec));
-#endif
 
   return r;
 }
